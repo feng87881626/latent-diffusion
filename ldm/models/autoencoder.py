@@ -284,14 +284,14 @@ class VQModelInterface(VQModel):
 
 class AutoencoderKL(pl.LightningModule):
     def __init__(self,
-                 ddconfig,
-                 lossconfig,
-                 embed_dim,
-                 ckpt_path=None,
-                 ignore_keys=[],
-                 image_key="image",
+                 ddconfig,   #用于构造Encoder和Decoder的配置参数
+                 lossconfig, #用于构造损失函数的配置参数
+                 embed_dim,  #embedding dim 嵌入维度
+                 ckpt_path=None, #加载预训练模型的路径
+                 ignore_keys=[], #加载模型时忽略的层
+                 image_key="image",  #输入批次中提取图像数据的键名
                  colorize_nlabels=None,
-                 monitor=None,
+                 monitor=None, #用于监控模型训练的对象
                  ):
         super().__init__()
         self.image_key = image_key
@@ -299,8 +299,8 @@ class AutoencoderKL(pl.LightningModule):
         self.decoder = Decoder(**ddconfig)
         self.loss = instantiate_from_config(lossconfig)
         assert ddconfig["double_z"]
-        self.quant_conv = torch.nn.Conv2d(2*ddconfig["z_channels"], 2*embed_dim, 1)
-        self.post_quant_conv = torch.nn.Conv2d(embed_dim, ddconfig["z_channels"], 1)
+        self.quant_conv = torch.nn.Conv2d(2*ddconfig["z_channels"], 2*embed_dim, 1) #量化z为embedding   乘2的原因是预测均值和对数方差
+        self.post_quant_conv = torch.nn.Conv2d(embed_dim, ddconfig["z_channels"], 1) #解量化为z
         self.embed_dim = embed_dim
         if colorize_nlabels is not None:
             assert type(colorize_nlabels)==int
@@ -310,6 +310,7 @@ class AutoencoderKL(pl.LightningModule):
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
 
+    #从指定路径加载模型和状态字典
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
         keys = list(sd.keys())
@@ -321,26 +322,30 @@ class AutoencoderKL(pl.LightningModule):
         self.load_state_dict(sd, strict=False)
         print(f"Restored from {path}")
 
+    #输入x, 输出一个高斯分布, 返回一个 DiagonalGaussianDistribution 对象
     def encode(self, x):
-        h = self.encoder(x)
-        moments = self.quant_conv(h)
+        h = self.encoder(x)  #通道数为 2*z_channels
+        moments = self.quant_conv(h) #通道数 2*z_channels -> 2*embed_dim
         posterior = DiagonalGaussianDistribution(moments)
         return posterior
 
+    #输入z, 输出解码结果, 返回一个 torch.tensor对象
     def decode(self, z):
-        z = self.post_quant_conv(z)
+        z = self.post_quant_conv(z) #通道数 2*embed_dim -> 2*z_channels
         dec = self.decoder(z)
         return dec
 
+    #前向过程,先encode,再decode, 返回torch.tensor对象和encode结果DiagonalGaussianDistribution
     def forward(self, input, sample_posterior=True):
         posterior = self.encode(input)
-        if sample_posterior:
+        if sample_posterior:   #表示latent variable z 是采样还是直接取均值
             z = posterior.sample()
         else:
             z = posterior.mode()
         dec = self.decode(z)
         return dec, posterior
 
+    #用于将输入数据处理为合适的状态
     def get_input(self, batch, k):
         x = batch[k]
         if len(x.shape) == 3:
@@ -348,6 +353,8 @@ class AutoencoderKL(pl.LightningModule):
         x = x.permute(0, 3, 1, 2).to(memory_format=torch.contiguous_format).float()
         return x
 
+    #训练
+    #计算loss
     def training_step(self, batch, batch_idx, optimizer_idx):
         inputs = self.get_input(batch, self.image_key)
         reconstructions, posterior = self(inputs)
@@ -369,6 +376,7 @@ class AutoencoderKL(pl.LightningModule):
             self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False)
             return discloss
 
+    #测试
     def validation_step(self, batch, batch_idx):
         inputs = self.get_input(batch, self.image_key)
         reconstructions, posterior = self(inputs)
@@ -383,6 +391,7 @@ class AutoencoderKL(pl.LightningModule):
         self.log_dict(log_dict_disc)
         return self.log_dict
 
+    #配置和构造优化器
     def configure_optimizers(self):
         lr = self.learning_rate
         opt_ae = torch.optim.Adam(list(self.encoder.parameters())+
@@ -394,9 +403,11 @@ class AutoencoderKL(pl.LightningModule):
                                     lr=lr, betas=(0.5, 0.9))
         return [opt_ae, opt_disc], []
 
+    #返回模型最后一层的权重
     def get_last_layer(self):
         return self.decoder.conv_out.weight
 
+    #记录生成的图像
     @torch.no_grad()
     def log_images(self, batch, only_inputs=False, **kwargs):
         log = dict()
@@ -414,6 +425,7 @@ class AutoencoderKL(pl.LightningModule):
         log["inputs"] = x
         return log
 
+    #记录生成的分割图像
     def to_rgb(self, x):
         assert self.image_key == "segmentation"
         if not hasattr(self, "colorize"):

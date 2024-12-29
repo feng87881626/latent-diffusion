@@ -3,7 +3,12 @@ import torch.nn as nn
 
 from taming.modules.losses.vqperceptual import *  # TODO: taming dependency yes/no?
 
-
+#该类计算VAE 的损失
+#损失构成:
+# 1.真实图-生成图 像素级别L1损失
+# 2.真实图-生成图 特征级别的相似度损失
+# 3.VAE的KL损失
+# 4.生成器和鉴别器的损失
 class LPIPSWithDiscriminator(nn.Module):
     def __init__(self, disc_start, logvar_init=0.0, kl_weight=1.0, pixelloss_weight=1.0,
                  disc_num_layers=3, disc_in_channels=3, disc_factor=1.0, disc_weight=1.0,
